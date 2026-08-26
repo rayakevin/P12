@@ -1,0 +1,18 @@
+[project]
+name = "p12"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "bs4>=0.0.2",
+    "feedparser>=6.0.13",
+    "ipykernel>=7.3.0",
+    "pandas>=3.0.5",
+    "pip>=26.1.2",
+    "pyarrow>=25.0.1",
+    "python-dotenv>=1.2.3",
+    "requests>=2.34.2",
+    "scrapy>=2.17.0",
+    "selenium>=4.46.0",
+]
