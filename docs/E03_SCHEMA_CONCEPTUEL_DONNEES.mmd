@@ -1,0 +1,37 @@
+erDiagram
+    PROVENANCE ||--o{ PUBLICATION : "décrit"
+    LOT_EXTRACTION ||--|{ PUBLICATION : "contient"
+    PUBLICATION ||--|| IMAGE : "est illustrée par"
+    PUBLICATION ||--o| LABEL_SOURCE : "peut recevoir"
+
+    PROVENANCE {
+        string source_name "source d'acquisition"
+        string source_domain "domaine de publication"
+    }
+
+    LOT_EXTRACTION {
+        datetime collected_at "traçabilité UTC"
+    }
+
+    PUBLICATION {
+        string publication_id "identifiant métier unique"
+        url source_url "provenance de la publication"
+        string title "entrée NLP courte"
+        text text "entrée NLP principale"
+        datetime published_at "contexte temporel UTC"
+        string language "code ISO 639-1"
+        string author "métadonnée éditoriale"
+    }
+
+    IMAGE {
+        url image_url "provenance distante"
+        path image_path "association locale"
+        integer image_size_bytes "contrôle qualité"
+        string image_sha256 "intégrité et doublons"
+    }
+
+    LABEL_SOURCE {
+        string source_label_raw "cible originale"
+        string source_label_scheme "sens du label"
+        string label_provenance "producteur du label"
+    }
