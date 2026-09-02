@@ -1,19 +1,35 @@
 [project]
 name = "p12"
 version = "0.1.0"
-description = "Add your description here"
+description = "Pipeline ETL multimodal pour l'acquisition et le suivi de publications"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "bs4>=0.0.2",
+    "beautifulsoup4>=4.14,<5",
     "feedparser>=6.0.13",
     "ipykernel>=7.3.0",
     "pandas>=3.0.5",
-    "pip>=26.1.2",
     "psycopg[binary]>=3.2,<4",
     "pyarrow>=25.0.1",
     "python-dotenv>=1.2.3",
     "requests>=2.34.2",
-    "scrapy>=2.17.0",
-    "selenium>=4.46.0",
+    "streamlit>=1.50,<2",
 ]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.16,<1",
+]
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B", "UP"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["collect_kpis", "common", "load_postgres", "transform_data"]
+
+[tool.ruff.lint.per-file-ignores]
+"dashboard/etl_kpi_dashboard.py" = ["E402"]
+"tests/*.py" = ["E402"]

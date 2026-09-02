@@ -17,3 +17,5 @@ logs/
 airflow/logs/
 docs/perso/
 tmp/
+.agents/
+.claude/

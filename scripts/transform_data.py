@@ -8,11 +8,11 @@ import logging
 import re
 import unicodedata
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Callable
 from urllib.parse import urlsplit
 
 import pandas as pd
@@ -25,8 +25,8 @@ from common import (
     file_sha256,
     relative_path,
     utc_now,
+    write_json_atomic,
 )
-
 
 SUPPORTED_SOURCES = ("newsdata", "politifact", "fakeddit", "theconversation")
 SCHEMA_VERSION = "1.2"
@@ -151,20 +151,18 @@ def normalize_datetime(value: object) -> str:
 
     try:
         if re.fullmatch(r"\d{9,}(?:\.\d+)?", text):
-            parsed = datetime.fromtimestamp(float(text), tz=timezone.utc)
+            parsed = datetime.fromtimestamp(float(text), tz=UTC)
         else:
             try:
-                parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+                parsed = datetime.fromisoformat(text)
             except ValueError:
                 parsed = parsedate_to_datetime(text)
     except (OverflowError, TypeError, ValueError) as error:
         raise RecordValidationError(f"date_invalide:{text}") from error
 
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc).isoformat(timespec="seconds").replace(
-        "+00:00", "Z"
-    )
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def normalize_domain(value: object) -> str | None:
@@ -178,7 +176,7 @@ def normalize_domain(value: object) -> str | None:
     if not hostname:
         return None
     hostname = hostname.lower()
-    return hostname[4:] if hostname.startswith("www.") else hostname
+    return hostname.removeprefix("www.")
 
 
 def is_http_url(value: object) -> bool:
@@ -218,7 +216,9 @@ def validate_image(
         raise RecordValidationError("image_path_absent")
 
     path = Path(path_text)
-    absolute_path = path.resolve() if path.is_absolute() else (PROJECT_ROOT / path).resolve()
+    absolute_path = (
+        path.resolve() if path.is_absolute() else (PROJECT_ROOT / path).resolve()
+    )
     images_root = (DATA_DIR / "images").resolve()
 
     try:
@@ -298,7 +298,11 @@ def transform_newsdata(
     if content in PAID_CONTENT_MARKERS:
         content = None
         metrics["newsdata_paid_content_fallbacks"] += 1
-    text = content or clean_text(raw.get("description")) or clean_text(raw.get("ai_summary"))
+    text = (
+        content
+        or clean_text(raw.get("description"))
+        or clean_text(raw.get("ai_summary"))
+    )
     source_url = clean_text(raw.get("link"))
     language = normalize_language(raw.get("language"), default="fr")
     if clean_text(raw.get("language")) != language:
@@ -389,7 +393,9 @@ def transform_fakeddit(
         "publication_id": publication_id,
         "source_name": "Fakeddit",
         "source_domain": normalize_domain(raw.get("domain")) or "reddit.com",
-        "source_url": f"https://www.reddit.com/comments/{image_id}" if image_id else None,
+        "source_url": f"https://www.reddit.com/comments/{image_id}"
+        if image_id
+        else None,
         "title": clean_text(raw.get("title") or raw.get("clean_title")),
         "text": clean_text(raw.get("clean_title") or raw.get("title")),
         "image_url": clean_text(raw.get("image_url")),
@@ -401,7 +407,9 @@ def transform_fakeddit(
         "language": "en",
         "author": normalize_author(raw.get("author")),
         "source_label_raw": raw_labels,
-        "source_label_scheme": "Fakeddit 2-way, 3-way and 6-way labels" if raw_labels else None,
+        "source_label_scheme": "Fakeddit 2-way, 3-way and 6-way labels"
+        if raw_labels
+        else None,
         "label_provenance": "Fakeddit distant supervision" if raw_labels else None,
         "collected_at": collected_at,
     }
@@ -455,6 +463,28 @@ TRANSFORMERS: dict[
 }
 
 
+def validate_configuration(
+    sources: list[str] | tuple[str, ...],
+    input_mode: str,
+    duplicate_policy: str,
+    output_format: str,
+) -> None:
+    """Valide les options utilisées par la CLI comme par Airflow."""
+    if not sources:
+        raise ValueError("Au moins une source doit être sélectionnée.")
+    unknown_sources = sorted(set(sources) - set(SUPPORTED_SOURCES))
+    if unknown_sources:
+        raise ValueError(f"Sources non prises en charge : {', '.join(unknown_sources)}")
+    if len(set(sources)) != len(sources):
+        raise ValueError("Une source ne peut être sélectionnée qu'une fois.")
+    if input_mode not in {"latest", "all"}:
+        raise ValueError("input_mode doit valoir 'latest' ou 'all'.")
+    if duplicate_policy not in {"keep-first", "keep-latest"}:
+        raise ValueError("duplicate_policy doit valoir 'keep-first' ou 'keep-latest'.")
+    if output_format not in {"parquet", "jsonl", "both"}:
+        raise ValueError("output_format doit valoir 'parquet', 'jsonl' ou 'both'.")
+
+
 def validate_record(record: dict) -> None:
     """Vérifie les contraintes métier minimales du schéma commun."""
     if not record.get("publication_id"):
@@ -489,11 +519,9 @@ def load_raw_batch(path: Path, expected_source: str, logger: logging.Logger) -> 
         raise RuntimeError(f"Lot JSON illisible : {path}") from error
 
     if not isinstance(payload, dict) or not isinstance(payload.get("records"), list):
-        raise RuntimeError(f"Structure de lot invalide : {path}")
+        raise TypeError(f"Structure de lot invalide : {path}")
     if payload.get("source") != expected_source:
-        raise RuntimeError(
-            f"Source inattendue dans {path} : {payload.get('source')!r}"
-        )
+        raise RuntimeError(f"Source inattendue dans {path} : {payload.get('source')!r}")
     if payload.get("count") != len(payload["records"]):
         logger.warning(
             "Le count annoncé dans %s diffère du nombre réel de records.",
@@ -525,6 +553,110 @@ def make_rejection(
     }
     rejection.update(details)
     return rejection
+
+
+def map_and_validate_record(
+    raw: dict,
+    source: str,
+    collected_at: str,
+    input_path: Path,
+    record_index: int,
+    batch_index: int,
+    metrics: Counter,
+) -> Candidate:
+    """Mappe un record brut et valide son contrat ainsi que son image."""
+    identifier = raw_record_id(source, raw, record_index)
+    record, evidence = TRANSFORMERS[source](raw, collected_at, metrics)
+    metrics["records_mapped"] += 1
+    metrics["published_dates_normalized"] += 1
+    metrics["text_records_normalized"] += 1
+
+    validate_record(record)
+    metrics["urls_validated"] += 2
+    image_path, image_size, image_hash, provenance_status = validate_image(
+        record["image_path"],
+        record["image_url"],
+        evidence,
+        metrics,
+    )
+    record.update(
+        {
+            "image_path": image_path,
+            "image_size_bytes": image_size,
+            "image_sha256": image_hash,
+            "image_provenance_status": provenance_status,
+        }
+    )
+    return Candidate(
+        record=record,
+        source=source,
+        input_path=input_path,
+        raw_record_id=identifier,
+        batch_index=batch_index,
+    )
+
+
+def transform_batch(
+    source: str,
+    input_path: Path,
+    batch_index: int,
+    metrics: Counter,
+    logger: logging.Logger,
+) -> tuple[list[Candidate], list[dict], dict]:
+    """Transforme un lot brut et retourne candidats, rejets et audit du lot."""
+    payload = load_raw_batch(input_path, source, logger)
+    try:
+        collected_at = normalize_datetime(payload.get("collected_at"))
+    except RecordValidationError as error:
+        raise RuntimeError(f"Date de collecte invalide dans {input_path}") from error
+
+    audit = {
+        "source": source,
+        "path": relative_path(input_path),
+        "sha256": file_sha256(input_path),
+        "collected_at": collected_at,
+        "raw_count": len(payload["records"]),
+        "validated_count": 0,
+        "validation_rejected_count": 0,
+        "duplicate_discarded_count": 0,
+        "accepted_count": 0,
+    }
+    metrics["input_batches_read"] += 1
+    metrics["records_read"] += len(payload["records"])
+    metrics["collection_dates_normalized"] += 1
+    logger.info("Lot lu : %s (%s records)", input_path, len(payload["records"]))
+
+    candidates: list[Candidate] = []
+    rejected: list[dict] = []
+    for record_index, raw in enumerate(payload["records"], start=1):
+        if not isinstance(raw, dict):
+            identifier = f"index_{record_index}"
+            reason = "record_brut_invalide"
+        else:
+            identifier = raw_record_id(source, raw, record_index)
+            try:
+                candidate = map_and_validate_record(
+                    raw,
+                    source,
+                    collected_at,
+                    input_path,
+                    record_index,
+                    batch_index,
+                    metrics,
+                )
+            except RecordValidationError as error:
+                reason = str(error)
+            else:
+                candidates.append(candidate)
+                audit["validated_count"] += 1
+                continue
+
+        audit["validation_rejected_count"] += 1
+        metrics["validation_rejections"] += 1
+        rejected.append(make_rejection(None, source, input_path, identifier, reason))
+        logger.warning("%s/%s rejeté : %s", source, identifier, reason)
+
+    return candidates, rejected, audit
 
 
 def deduplicate_candidates(
@@ -613,86 +745,17 @@ def transform_inputs(
     metrics: Counter = Counter()
 
     logger.info("Étape 1/4 - Lecture et contrôle des lots bruts")
-    for source, input_path in input_files:
-        payload = load_raw_batch(input_path, source, logger)
-        try:
-            collected_at = normalize_datetime(payload.get("collected_at"))
-        except RecordValidationError as error:
-            raise RuntimeError(f"Date de collecte invalide dans {input_path}") from error
-
-        audit = {
-            "source": source,
-            "path": relative_path(input_path),
-            "sha256": file_sha256(input_path),
-            "collected_at": collected_at,
-            "raw_count": len(payload["records"]),
-            "validated_count": 0,
-            "validation_rejected_count": 0,
-            "duplicate_discarded_count": 0,
-            "accepted_count": 0,
-        }
-        batch_index = len(batch_audits)
-        batch_audits.append(audit)
-        metrics["input_batches_read"] += 1
-        metrics["records_read"] += len(payload["records"])
-        metrics["collection_dates_normalized"] += 1
-
-        logger.info(
-            "Lot lu : %s (%s records)",
+    for batch_index, (source, input_path) in enumerate(input_files):
+        batch_candidates, batch_rejected, audit = transform_batch(
+            source,
             input_path,
-            len(payload["records"]),
+            batch_index,
+            metrics,
+            logger,
         )
-
-        transformer = TRANSFORMERS[source]
-        for index, raw in enumerate(payload["records"], start=1):
-            identifier = raw_record_id(source, raw, index)
-            try:
-                record, evidence = transformer(raw, collected_at, metrics)
-                metrics["records_mapped"] += 1
-                metrics["published_dates_normalized"] += 1
-                metrics["text_records_normalized"] += 1
-                validate_record(record)
-                metrics["urls_validated"] += 2
-
-                image_path, image_size, image_hash, provenance_status = validate_image(
-                    record["image_path"],
-                    record["image_url"],
-                    evidence,
-                    metrics,
-                )
-                record["image_path"] = image_path
-                record["image_size_bytes"] = image_size
-                record["image_sha256"] = image_hash
-                record["image_provenance_status"] = provenance_status
-
-                candidates.append(
-                    Candidate(
-                        record=record,
-                        source=source,
-                        input_path=input_path,
-                        raw_record_id=identifier,
-                        batch_index=batch_index,
-                    )
-                )
-                audit["validated_count"] += 1
-            except RecordValidationError as error:
-                audit["validation_rejected_count"] += 1
-                metrics["validation_rejections"] += 1
-                rejected.append(
-                    make_rejection(
-                        None,
-                        source,
-                        input_path,
-                        identifier,
-                        str(error),
-                    )
-                )
-                logger.warning(
-                    "%s/%s rejeté : %s",
-                    source,
-                    identifier,
-                    error,
-                )
+        candidates.extend(batch_candidates)
+        rejected.extend(batch_rejected)
+        batch_audits.append(audit)
 
     logger.info(
         "Étape 2/4 - Nettoyage, normalisation et validation : %s candidats",
@@ -755,20 +818,9 @@ def write_jsonl(records: list[dict], path: Path) -> None:
     try:
         with temporary_path.open("w", encoding="utf-8") as file:
             for record in records:
-                file.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
-        temporary_path.replace(path)
-    except Exception:
-        temporary_path.unlink(missing_ok=True)
-        raise
-
-
-def write_json(payload: dict, path: Path) -> None:
-    """Écrit atomiquement un dictionnaire JSON lisible."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = path.with_suffix(f"{path.suffix}.part")
-    try:
-        with temporary_path.open("w", encoding="utf-8") as file:
-            json.dump(payload, file, ensure_ascii=False, indent=2, sort_keys=True)
+                file.write(
+                    json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
+                )
         temporary_path.replace(path)
     except Exception:
         temporary_path.unlink(missing_ok=True)
@@ -815,6 +867,12 @@ def run_transformation(
     logger: logging.Logger,
 ) -> dict:
     """Exécute le pipeline et retourne le manifeste écrit sur disque."""
+    validate_configuration(
+        sources,
+        input_mode,
+        duplicate_policy,
+        output_format,
+    )
     input_files = resolve_input_files(sources, input_mode, raw_dir)
     logger.info(
         "Configuration : input_mode=%s, duplicate_policy=%s",
@@ -879,7 +937,7 @@ def run_transformation(
         "rejected_path": relative_path(rejected_path),
     }
     manifest_path = processed_dir / "transformation_manifest.json"
-    write_json(manifest, manifest_path)
+    write_json_atomic(manifest, manifest_path, sort_keys=True)
 
     for metric, value in sorted(metrics.items()):
         logger.info("Métrique transformation | %s=%s", metric, value)
@@ -944,7 +1002,7 @@ def main() -> None:
         )
     except Exception:
         logger.exception("Échec du pipeline de transformation")
-        raise SystemExit(1)
+        raise SystemExit(1) from None
 
 
 if __name__ == "__main__":

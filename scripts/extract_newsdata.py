@@ -10,13 +10,12 @@ from dotenv import load_dotenv
 from common import (
     DATA_DIR,
     PROJECT_ROOT,
+    add_image_evidence,
     configure_logging,
     create_http_session,
     download_image,
-    relative_path,
     save_json_records,
 )
-
 
 API_URL = "https://newsdata.io/api/1/latest"
 IMAGES_DIR = DATA_DIR / "images" / "newsdata"
@@ -31,6 +30,9 @@ def extract_newsdata(
     logger: logging.Logger,
 ) -> list[dict]:
     """Récupère et sauvegarde en mémoire jusqu'à ``limit`` articles multimodaux."""
+    if limit < 1 or max_pages < 1:
+        raise ValueError("limit et max_pages doivent être positifs.")
+
     records: list[dict] = []
     page_token: str | None = None
     seen_tokens: set[str] = set()
@@ -67,7 +69,9 @@ def extract_newsdata(
                 description = str(article.get("description") or "").strip()
 
                 if not article_id or not image_url or not (title or description):
-                    logger.warning("Article incomplet ignoré : %s", article_id or "sans id")
+                    logger.warning(
+                        "Article incomplet ignoré : %s", article_id or "sans id"
+                    )
                     continue
 
                 try:
@@ -78,17 +82,18 @@ def extract_newsdata(
                         IMAGES_DIR,
                         refresh_existing=refresh_images,
                     )
-                except (requests.RequestException, OSError, ValueError, RuntimeError) as error:
+                except (
+                    requests.RequestException,
+                    OSError,
+                    ValueError,
+                    RuntimeError,
+                ) as error:
                     logger.warning("Image ignorée pour %s : %s", article_id, error)
                     continue
 
                 # On conserve l'objet API brut et on ajoute seulement les infos d'extraction.
                 record = dict(article)
-                record["_image_path"] = relative_path(image.path)
-                record["_image_size"] = image.size_bytes
-                record["_image_sha256"] = image.sha256
-                record["_downloaded_from_url"] = image.source_url
-                record["_image_provenance_status"] = image.provenance_status
+                add_image_evidence(record, image)
                 records.append(record)
                 logger.info(
                     "Article %s prêt (%s, provenance=%s)",
@@ -104,7 +109,9 @@ def extract_newsdata(
             if not next_token:
                 break
             if next_token in seen_tokens:
-                raise RuntimeError("NewsData.io a renvoyé un jeton de page déjà traité.")
+                raise RuntimeError(
+                    "NewsData.io a renvoyé un jeton de page déjà traité."
+                )
 
             seen_tokens.add(next_token)
             page_token = next_token
@@ -138,9 +145,6 @@ def main() -> None:
         api_key = os.getenv("NEWSDATA_API_KEY")
         if not api_key:
             raise RuntimeError("La variable NEWSDATA_API_KEY est absente.")
-        if args.limit < 1 or args.max_pages < 1:
-            raise ValueError("--limit et --max-pages doivent être positifs.")
-
         records = extract_newsdata(
             api_key,
             args.limit,
@@ -150,10 +154,12 @@ def main() -> None:
             logger,
         )
         output_path = save_json_records(records, "newsdata")
-        logger.info("Extraction terminée : %s articles dans %s", len(records), output_path)
+        logger.info(
+            "Extraction terminée : %s articles dans %s", len(records), output_path
+        )
     except Exception:
         logger.exception("Échec de l'extraction NewsData.io")
-        raise SystemExit(1)
+        raise SystemExit(1) from None
 
 
 if __name__ == "__main__":

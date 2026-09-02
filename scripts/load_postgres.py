@@ -12,7 +12,6 @@ import pandas as pd
 from common import DATA_DIR, configure_logging
 from transform_data import FINAL_COLUMNS
 
-
 DEFAULT_PARQUET_PATH = DATA_DIR / "processed" / "publications.parquet"
 DEFAULT_TABLE = "publication_multimodale"
 
@@ -71,10 +70,15 @@ def read_publications(parquet_path: Path) -> pd.DataFrame:
 
     dataframe = pd.read_parquet(parquet_path)
     if tuple(dataframe.columns) != FINAL_COLUMNS:
-        raise ValueError("Les colonnes du Parquet ne correspondent pas au contrat final.")
+        raise ValueError(
+            "Les colonnes du Parquet ne correspondent pas au contrat final."
+        )
     if dataframe.empty:
         raise ValueError("Le Parquet ne contient aucune publication.")
-    if dataframe["publication_id"].isna().any() or not dataframe["publication_id"].is_unique:
+    if (
+        dataframe["publication_id"].isna().any()
+        or not dataframe["publication_id"].is_unique
+    ):
         raise ValueError("publication_id doit être renseigné et unique.")
     return dataframe
 
@@ -198,11 +202,12 @@ def main() -> None:
     """Charge le Parquet avec l'URL conservée dans une variable d'environnement."""
     args = parse_args()
     logger = configure_logging("load_postgres")
-    database_url = os.getenv("CHECKITAI_DATABASE_URL")
-    if not database_url:
-        raise SystemExit("La variable CHECKITAI_DATABASE_URL est absente.")
 
     try:
+        database_url = os.getenv("CHECKITAI_DATABASE_URL")
+        if not database_url:
+            raise RuntimeError("La variable CHECKITAI_DATABASE_URL est absente.")
+
         import psycopg
 
         with psycopg.connect(database_url) as connection:
@@ -221,7 +226,7 @@ def main() -> None:
         logger.info("Contrôle final PostgreSQL : %s", result)
     except Exception:
         logger.exception("Échec du chargement PostgreSQL")
-        raise SystemExit(1)
+        raise SystemExit(1) from None
 
 
 if __name__ == "__main__":

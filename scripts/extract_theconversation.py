@@ -13,13 +13,12 @@ from bs4 import BeautifulSoup
 
 from common import (
     DATA_DIR,
+    add_image_evidence,
     configure_logging,
     create_http_session,
     download_image,
-    relative_path,
     save_json_records,
 )
-
 
 FEED_URL = "https://theconversation.com/fr/articles.atom"
 IMAGES_DIR = DATA_DIR / "images" / "theconversation"
@@ -70,9 +69,7 @@ def parse_article_page(html: bytes, requested_url: str) -> dict[str, str | None]
         else None,
         "author": meta_content(soup, 'meta[name="author"]'),
         "image_url": urljoin(source_url, image_url) if image_url else None,
-        "image_caption": caption_tag.get_text(" ", strip=True)
-        if caption_tag
-        else None,
+        "image_caption": caption_tag.get_text(" ", strip=True) if caption_tag else None,
     }
 
 
@@ -83,6 +80,9 @@ def extract_theconversation(
     logger: logging.Logger,
 ) -> list[dict]:
     """Parcourt le flux Atom puis analyse jusqu'à ``limit`` pages avec Beautiful Soup."""
+    if limit < 1 or request_delay < 0:
+        raise ValueError("limit doit être positif et request_delay positif ou nul.")
+
     records: list[dict] = []
     attempted_pages = 0
 
@@ -105,7 +105,9 @@ def extract_theconversation(
             article_url = str(entry.get("link") or "").strip()
             hostname = (urlsplit(article_url).hostname or "").lower()
             if hostname not in {"theconversation.com", "www.theconversation.com"}:
-                logger.warning("URL hors domaine ignorée : %s", article_url or "absente")
+                logger.warning(
+                    "URL hors domaine ignorée : %s", article_url or "absente"
+                )
                 continue
 
             if attempted_pages and request_delay:
@@ -130,11 +132,18 @@ def extract_theconversation(
                     IMAGES_DIR,
                     refresh_existing=refresh_images,
                 )
-            except (requests.RequestException, OSError, ValueError, RuntimeError) as error:
-                logger.warning("Article ignoré (%s) : %s", article_url or "sans URL", error)
+            except (
+                requests.RequestException,
+                OSError,
+                ValueError,
+                RuntimeError,
+            ) as error:
+                logger.warning(
+                    "Article ignoré (%s) : %s", article_url or "sans URL", error
+                )
                 continue
 
-            records.append({
+            record = {
                 "id": article_id,
                 "feed_id": entry.get("id"),
                 "link": page["link"],
@@ -146,12 +155,9 @@ def extract_theconversation(
                 "image_url": image_url,
                 "image_caption": page["image_caption"],
                 "rights": entry.get("rights"),
-                "_image_path": relative_path(image.path),
-                "_image_size": image.size_bytes,
-                "_image_sha256": image.sha256,
-                "_downloaded_from_url": image.source_url,
-                "_image_provenance_status": image.provenance_status,
-            })
+            }
+            add_image_evidence(record, image)
+            records.append(record)
             logger.info(
                 "[%s/%s] Article %s prêt (%s, provenance=%s)",
                 len(records),
@@ -162,7 +168,9 @@ def extract_theconversation(
             )
 
     if not records:
-        raise RuntimeError("Aucun article texte-image The Conversation n'a été extrait.")
+        raise RuntimeError(
+            "Aucun article texte-image The Conversation n'a été extrait."
+        )
     return records
 
 
@@ -190,8 +198,6 @@ def main() -> None:
     logger = configure_logging("theconversation")
 
     try:
-        if args.limit < 1 or args.request_delay < 0:
-            raise ValueError("--limit doit être positif et --request-delay positif ou nul.")
         records = extract_theconversation(
             args.limit,
             args.request_delay,
@@ -199,10 +205,12 @@ def main() -> None:
             logger,
         )
         output_path = save_json_records(records, "theconversation")
-        logger.info("Extraction terminée : %s articles dans %s", len(records), output_path)
+        logger.info(
+            "Extraction terminée : %s articles dans %s", len(records), output_path
+        )
     except Exception:
         logger.exception("Échec de l'extraction The Conversation")
-        raise SystemExit(1)
+        raise SystemExit(1) from None
 
 
 if __name__ == "__main__":

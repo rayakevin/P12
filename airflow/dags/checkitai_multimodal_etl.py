@@ -2,12 +2,11 @@
 
 import os
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from airflow.sdk import DAG
 from airflow.providers.standard.operators.python import PythonOperator
-
+from airflow.sdk import DAG
 
 DAG_ID = "checkitai_multimodal_etl"
 POSTGRES_CONN_ID = "checkitai_warehouse"
@@ -38,8 +37,9 @@ def positive_int_env(name: str, default: int) -> int:
 def extract_newsdata_task() -> int:
     """Extrait et sauvegarde un lot NewsData.io."""
     import_project_scripts()
-    from common import configure_logging, save_json_records
     from extract_newsdata import extract_newsdata
+
+    from common import configure_logging, save_json_records
 
     api_key = os.getenv("NEWSDATA_API_KEY")
     if not api_key:
@@ -60,8 +60,9 @@ def extract_newsdata_task() -> int:
 def extract_politifact_task() -> int:
     """Extrait et sauvegarde un lot PolitiFact."""
     import_project_scripts()
-    from common import configure_logging, save_json_records
     from extract_politifact import extract_politifact
+
+    from common import configure_logging, save_json_records
 
     logger = configure_logging("politifact")
     records = extract_politifact(
@@ -76,8 +77,9 @@ def extract_politifact_task() -> int:
 def extract_fakeddit_task() -> int:
     """Extrait et sauvegarde un lot Fakeddit depuis le TSV monté."""
     root = import_project_scripts()
-    from common import configure_logging, save_json_records
     from extract_fakeddit import extract_fakeddit
+
+    from common import configure_logging, save_json_records
 
     logger = configure_logging("fakeddit")
     tsv_path = Path(
@@ -99,8 +101,9 @@ def extract_fakeddit_task() -> int:
 def extract_theconversation_task() -> int:
     """Extrait et sauvegarde un lot The Conversation France."""
     import_project_scripts()
-    from common import configure_logging, save_json_records
     from extract_theconversation import extract_theconversation
+
+    from common import configure_logging, save_json_records
 
     logger = configure_logging("theconversation")
     request_delay = float(os.getenv("CHECKITAI_REQUEST_DELAY", "1.0"))
@@ -140,6 +143,7 @@ def load_postgres_task() -> int:
     """Charge le Parquet dans la base métier via une connexion Airflow."""
     root = import_project_scripts()
     from airflow.providers.postgres.hooks.postgres import PostgresHook
+
     from common import configure_logging
     from load_postgres import load_publications
 
@@ -162,6 +166,7 @@ def validate_postgres_task(ti) -> dict[str, int]:
     """Compare le volume chargé et contrôle les associations multimodales."""
     import_project_scripts()
     from airflow.providers.postgres.hooks.postgres import PostgresHook
+
     from load_postgres import validate_loaded_table
 
     expected_count = int(ti.xcom_pull(task_ids="transform"))
@@ -181,7 +186,7 @@ with DAG(
     dag_id=DAG_ID,
     description="Extraction, transformation et chargement des publications multimodales",
     schedule=os.getenv("CHECKITAI_SCHEDULE") or None,
-    start_date=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    start_date=datetime(2026, 1, 1, tzinfo=UTC),
     catchup=False,
     max_active_runs=1,
     default_args={
@@ -220,9 +225,14 @@ with DAG(
         python_callable=validate_postgres_task,
     )
 
-    [
-        extract_newsdata,
-        extract_politifact,
-        extract_fakeddit,
-        extract_theconversation,
-    ] >> transform >> load_postgres >> validate_postgres
+    (
+        [
+            extract_newsdata,
+            extract_politifact,
+            extract_fakeddit,
+            extract_theconversation,
+        ]
+        >> transform
+        >> load_postgres
+        >> validate_postgres
+    )

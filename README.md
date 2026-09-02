@@ -1,6 +1,7 @@
-# CheckIt.AI — Acquisition de données multimodales
+# CheckIt.AI — Pipeline ETL de données multimodales
 
-Ce projet extrait automatiquement du texte et des images depuis quatre sources :
+Ce projet extrait, transforme, charge et surveille des publications associant
+texte et image. L'acquisition s'appuie sur quatre sources complémentaires :
 
 - NewsData.io : API REST JSON avec clé ;
 - PolitiFact : flux RSS public ;
@@ -30,13 +31,13 @@ data/external/fakeddit/multimodal_train.tsv
 Lancer toutes les sources sans intervention :
 
 ```bash
-uv run python scripts/run_etl.py
+uv run python scripts/run_extractions.py
 ```
 
 Pour retélécharger les images et recréer une preuve forte URL–hash :
 
 ```bash
-uv run python scripts/run_etl.py --refresh-images
+uv run python scripts/run_extractions.py --refresh-images
 ```
 
 Ou lancer une seule source :
@@ -56,6 +57,14 @@ Chaque script possède une aide :
 
 ```bash
 uv run python scripts/extract_newsdata.py --help
+```
+
+Les contrôles unitaires et la qualité statique s’exécutent sans accès réseau :
+
+```bash
+uv run python -m unittest discover -s tests -v
+uv run ruff check scripts dashboard airflow/dags tests
+uv run ruff format --check scripts dashboard airflow/dags tests
 ```
 
 ## Sorties
@@ -78,7 +87,7 @@ logs/
 ├── politifact.log
 ├── fakeddit.log
 ├── theconversation.log
-└── run_extraction.log
+└── run_extractions.log
 ```
 
 Les JSON conservent les champs fournis par chaque source et ajoutent seulement
@@ -154,15 +163,33 @@ docker compose --env-file .env.airflow -f docker-compose.airflow.yml up -d
 
 L'interface Airflow est alors disponible sur <http://localhost:8080>. Les étapes,
 les paramètres, la sécurité et les preuves d'exécution sont décrits dans
-[`docs/E04_FLUX_ETL_AIRFLOW.md`](docs/E04_FLUX_ETL_AIRFLOW.md).
+[`docs/E04_FLUX_ETL_AIRFLOW.ipynb`](docs/E04_FLUX_ETL_AIRFLOW.ipynb).
+
+## Tableau de bord et monitoring
+
+Le tableau de bord Streamlit calcule les KPI de qualité, rapidité, fiabilité et
+coût à partir du manifeste, du Parquet et des logs Airflow :
+
+```bash
+uv run streamlit run dashboard/etl_kpi_dashboard.py
+```
+
+Il est disponible sur <http://localhost:8501>. Les formules, seuils d'alerte,
+fréquences de contrôle et consignes en cas d'incident sont documentés dans
+[`docs/E05_PLAN_MONITORING.ipynb`](docs/E05_PLAN_MONITORING.ipynb).
 
 ## Documentation détaillée
 
-- [`E01_RAPPORT_EXPLORATION_SOURCES.ipynb`](docs/E01_RAPPORT_EXPLORATION_SOURCES.ipynb)
-- [`E03_SCHEMA_DONNEES.ipynb`](docs/E03_SCHEMA_DONNEES.ipynb)
-- [`E04_FLUX_ETL_AIRFLOW.md`](docs/E04_FLUX_ETL_AIRFLOW.md)
+- [`E01_RAPPORT_EXPLORATION_SOURCES.ipynb`](docs/E01_RAPPORT_EXPLORATION_SOURCES.ipynb) — [PDF](docs/E01_RAPPORT_EXPLORATION_SOURCES.pdf)
+- [`E03_SCHEMA_DONNEES.ipynb`](docs/E03_SCHEMA_DONNEES.ipynb) — [PDF](docs/E03_SCHEMA_DONNEES.pdf)
+- [`E04_FLUX_ETL_AIRFLOW.ipynb`](docs/E04_FLUX_ETL_AIRFLOW.ipynb) — [PDF](docs/E04_FLUX_ETL_AIRFLOW.pdf)
+- [`E05_PLAN_MONITORING.ipynb`](docs/E05_PLAN_MONITORING.ipynb) — [PDF](docs/E05_PLAN_MONITORING.pdf)
+- [`INDEX_DOCUMENTATION_PERSONNELLE.html`](docs/perso/INDEX_DOCUMENTATION_PERSONNELLE.html)
 - [`GUIDE_EXTRACTION_LIGNE_PAR_LIGNE.html`](docs/perso/GUIDE_EXTRACTION_LIGNE_PAR_LIGNE.html)
 - [`GUIDE_TRANSFORMATION_LIGNE_PAR_LIGNE.html`](docs/perso/GUIDE_TRANSFORMATION_LIGNE_PAR_LIGNE.html)
+- [`GUIDE_AIRFLOW_POSTGRES_LIGNE_PAR_LIGNE.html`](docs/perso/GUIDE_AIRFLOW_POSTGRES_LIGNE_PAR_LIGNE.html)
+- [`GUIDE_MONITORING_STREAMLIT_LIGNE_PAR_LIGNE.html`](docs/perso/GUIDE_MONITORING_STREAMLIT_LIGNE_PAR_LIGNE.html)
+- [`GUIDE_SESSION_BILAN_MENTOR.html`](docs/perso/GUIDE_SESSION_BILAN_MENTOR.html)
 
 ## Choix des outils
 

@@ -10,7 +10,6 @@ from dotenv import dotenv_values
 
 from common import PROJECT_ROOT
 
-
 DEFAULT_OUTPUT = PROJECT_ROOT / ".env.airflow"
 
 
@@ -76,14 +75,18 @@ def main() -> None:
     """Génère la configuration en réutilisant la clé NewsData locale si présente."""
     args = parse_args()
     if args.output.exists() and not args.force:
-        raise SystemExit(f"{args.output} existe déjà ; utilisez --force pour le remplacer.")
+        raise SystemExit(
+            f"{args.output} existe déjà ; utilisez --force pour le remplacer."
+        )
 
     project_env = dotenv_values(PROJECT_ROOT / ".env")
     newsdata_api_key = str(project_env.get("NEWSDATA_API_KEY") or "")
     write_configuration(args.output, build_configuration(newsdata_api_key))
     print(f"Configuration créée : {args.output} (permissions 0600)")
     if not newsdata_api_key:
-        print("Ajoutez NEWSDATA_API_KEY dans ce fichier avant de lancer le DAG complet.")
+        print(
+            "Ajoutez NEWSDATA_API_KEY dans ce fichier avant de lancer le DAG complet."
+        )
 
 
 if __name__ == "__main__":

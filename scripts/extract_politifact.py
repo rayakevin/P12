@@ -9,13 +9,12 @@ import requests
 
 from common import (
     DATA_DIR,
+    add_image_evidence,
     configure_logging,
     create_http_session,
     download_image,
-    relative_path,
     save_json_records,
 )
-
 
 RSS_URL = "https://www.politifact.com/rss/factchecks/"
 IMAGES_DIR = DATA_DIR / "images" / "politifact"
@@ -33,6 +32,9 @@ def extract_politifact(
     logger: logging.Logger,
 ) -> list[dict]:
     """Récupère jusqu'à ``limit`` entrées RSS possédant texte et image."""
+    if limit < 1:
+        raise ValueError("limit doit être positif.")
+
     records: list[dict] = []
 
     with create_http_session() as session:
@@ -53,14 +55,18 @@ def extract_politifact(
 
             entry_id = str(entry.get("id") or entry.get("link") or "").strip()
             content_items = entry.get("content", [])
-            content_html = (
-                content_items[0].get("value", "") if content_items else ""
-            )
+            content_html = content_items[0].get("value", "") if content_items else ""
             thumbnails = entry.get("media_thumbnail", [])
             image_url = thumbnails[0].get("url", "") if thumbnails else ""
 
-            if not entry_id or not image_url or not (entry.get("summary") or content_html):
-                logger.warning("Entrée RSS incomplète ignorée : %s", entry_id or "sans id")
+            if (
+                not entry_id
+                or not image_url
+                or not (entry.get("summary") or content_html)
+            ):
+                logger.warning(
+                    "Entrée RSS incomplète ignorée : %s", entry_id or "sans id"
+                )
                 continue
 
             try:
@@ -71,12 +77,17 @@ def extract_politifact(
                     IMAGES_DIR,
                     refresh_existing=refresh_images,
                 )
-            except (requests.RequestException, OSError, ValueError, RuntimeError) as error:
+            except (
+                requests.RequestException,
+                OSError,
+                ValueError,
+                RuntimeError,
+            ) as error:
                 logger.warning("Image ignorée pour %s : %s", entry_id, error)
                 continue
 
             # Feedparser contient aussi des objets non sérialisables : seuls les champs bruts utiles sont gardés.
-            records.append({
+            record = {
                 "id": entry_id,
                 "title": entry.get("title"),
                 "link": entry.get("link"),
@@ -85,12 +96,9 @@ def extract_politifact(
                 "published": entry.get("published"),
                 "author": entry.get("author"),
                 "image_url": image_url,
-                "_image_path": relative_path(image.path),
-                "_image_size": image.size_bytes,
-                "_image_sha256": image.sha256,
-                "_downloaded_from_url": image.source_url,
-                "_image_provenance_status": image.provenance_status,
-            })
+            }
+            add_image_evidence(record, image)
+            records.append(record)
             logger.info(
                 "Fact-check prêt : %s (%s, provenance=%s)",
                 entry_id,
@@ -121,14 +129,14 @@ def main() -> None:
     logger = configure_logging("politifact")
 
     try:
-        if args.limit < 1:
-            raise ValueError("--limit doit être positif.")
         records = extract_politifact(args.limit, args.refresh_images, logger)
         output_path = save_json_records(records, "politifact")
-        logger.info("Extraction terminée : %s entrées dans %s", len(records), output_path)
+        logger.info(
+            "Extraction terminée : %s entrées dans %s", len(records), output_path
+        )
     except Exception:
         logger.exception("Échec de l'extraction PolitiFact")
-        raise SystemExit(1)
+        raise SystemExit(1) from None
 
 
 if __name__ == "__main__":
