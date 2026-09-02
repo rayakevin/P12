@@ -30,7 +30,7 @@ from common import (
 
 SUPPORTED_SOURCES = ("newsdata", "politifact", "fakeddit", "theconversation")
 SCHEMA_VERSION = "1.2"
-TRUSTED_IMAGE_PROVENANCE = {"downloaded", "metadata_verified", "verified"}
+TRUSTED_IMAGE_PROVENANCE = {"downloaded", "metadata_verified"}
 
 FINAL_COLUMNS = (
     "publication_id",
@@ -210,7 +210,6 @@ def validate_image(
     image_path: object,
     image_url: object,
     evidence: ImageEvidence,
-    legacy_policy: str,
     metrics: Counter,
 ) -> tuple[str, int, str, str]:
     """Valide fichier, association, hash et URL de provenance d'une image."""
@@ -253,23 +252,17 @@ def validate_image(
     raw_status = clean_text(evidence.provenance_status)
     current_url = clean_text(image_url)
 
-    if downloaded_from_url and raw_hash:
-        if downloaded_from_url != current_url:
-            raise RecordValidationError("image_url_provenance_incoherente")
-        if raw_hash != actual_hash:
-            raise RecordValidationError("image_hash_modifie_depuis_extraction")
-        provenance_status = raw_status or "verified"
-        if legacy_policy == "reject" and provenance_status not in TRUSTED_IMAGE_PROVENANCE:
-            raise RecordValidationError("image_provenance_legacy_refusee")
-        if provenance_status == "legacy_adopted":
-            metrics["legacy_images_adopted"] += 1
-        else:
-            metrics["image_provenances_verified"] += 1
-    else:
-        if legacy_policy == "reject":
-            raise RecordValidationError("image_provenance_absente")
-        provenance_status = "legacy_unverified"
-        metrics["legacy_images_without_proof"] += 1
+    if not downloaded_from_url or not raw_hash or not raw_status:
+        raise RecordValidationError("image_provenance_absente")
+    if raw_status not in TRUSTED_IMAGE_PROVENANCE:
+        raise RecordValidationError("image_provenance_invalide")
+    if downloaded_from_url != current_url:
+        raise RecordValidationError("image_url_provenance_incoherente")
+    if raw_hash != actual_hash:
+        raise RecordValidationError("image_hash_modifie_depuis_extraction")
+
+    provenance_status = raw_status
+    metrics["image_provenances_verified"] += 1
 
     metrics["images_validated"] += 1
     metrics["image_hashes_generated"] += 1
@@ -611,7 +604,6 @@ def deduplicate_candidates(
 def transform_inputs(
     input_files: list[tuple[str, Path]],
     duplicate_policy: str,
-    legacy_image_policy: str,
     logger: logging.Logger,
 ) -> tuple[list[dict], list[dict], list[dict], Counter]:
     """Lit, mappe, valide puis déduplique tous les lots sélectionnés."""
@@ -666,7 +658,6 @@ def transform_inputs(
                     record["image_path"],
                     record["image_url"],
                     evidence,
-                    legacy_image_policy,
                     metrics,
                 )
                 record["image_path"] = image_path
@@ -792,22 +783,13 @@ def project_path(path: Path) -> Path:
 def resolve_input_files(args: argparse.Namespace) -> list[tuple[str, Path]]:
     """Sélectionne le dernier lot ou tous les lots bruts de chaque source."""
     raw_dir = project_path(args.raw_dir)
-    overrides = {
-        "newsdata": args.newsdata_file,
-        "politifact": args.politifact_file,
-        "fakeddit": args.fakeddit_file,
-        "theconversation": args.theconversation_file,
-    }
     selected: list[tuple[str, Path]] = []
 
     for source in args.sources:
-        if overrides[source] is not None:
-            paths = [project_path(overrides[source])]
-        else:
-            candidates = sorted((raw_dir / source).glob("extraction_*.json"))
-            if not candidates:
-                raise FileNotFoundError(f"Aucun lot brut trouvé pour {source}.")
-            paths = candidates if args.input_mode == "all" else [candidates[-1]]
+        candidates = sorted((raw_dir / source).glob("extraction_*.json"))
+        if not candidates:
+            raise FileNotFoundError(f"Aucun lot brut trouvé pour {source}.")
+        paths = candidates if args.input_mode == "all" else [candidates[-1]]
 
         for path in paths:
             resolved_path = path.resolve()
@@ -839,19 +821,9 @@ def parse_args() -> argparse.Namespace:
         default="keep-latest",
         help="Choisit l'occurrence conservée lorsqu'un doublon est détecté.",
     )
-    parser.add_argument(
-        "--legacy-image-policy",
-        choices=("allow", "reject"),
-        default="allow",
-        help="Accepte ou refuse les anciens JSON sans preuve d'URL et de hash.",
-    )
     parser.add_argument("--raw-dir", type=Path, default=DATA_DIR / "raw")
     parser.add_argument("--processed-dir", type=Path, default=DATA_DIR / "processed")
     parser.add_argument("--rejected-dir", type=Path, default=DATA_DIR / "rejected")
-    parser.add_argument("--newsdata-file", type=Path)
-    parser.add_argument("--politifact-file", type=Path)
-    parser.add_argument("--fakeddit-file", type=Path)
-    parser.add_argument("--theconversation-file", type=Path)
     parser.add_argument(
         "--output-format",
         choices=("parquet", "jsonl", "both"),
@@ -868,10 +840,9 @@ def main() -> None:
     try:
         input_files = resolve_input_files(args)
         logger.info(
-            "Configuration : input_mode=%s, duplicate_policy=%s, legacy_image_policy=%s",
+            "Configuration : input_mode=%s, duplicate_policy=%s",
             args.input_mode,
             args.duplicate_policy,
-            args.legacy_image_policy,
         )
         for source, path in input_files:
             logger.info("Lot sélectionné pour %s : %s", source, path)
@@ -879,7 +850,6 @@ def main() -> None:
         accepted, rejected, inputs_manifest, metrics = transform_inputs(
             input_files,
             args.duplicate_policy,
-            args.legacy_image_policy,
             logger,
         )
         processed_dir = project_path(args.processed_dir)
@@ -911,7 +881,6 @@ def main() -> None:
                 "sources": list(args.sources),
                 "input_mode": args.input_mode,
                 "duplicate_policy": args.duplicate_policy,
-                "legacy_image_policy": args.legacy_image_policy,
                 "output_format": args.output_format,
                 "raw_dir": relative_path(project_path(args.raw_dir)),
                 "processed_dir": relative_path(processed_dir),

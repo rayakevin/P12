@@ -125,64 +125,35 @@ def reusable_image(
     """Réutilise une image seulement si sa preuve locale reste cohérente."""
     metadata_path = output_dir / f"{image_id}.metadata.json"
 
-    if metadata_path.is_file():
-        try:
-            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-            image_path = output_dir / metadata["file_name"]
-            size_bytes = image_path.stat().st_size
-            sha256 = file_sha256(image_path)
-            metadata_is_valid = (
-                image_path.is_file()
-                and size_bytes > 0
-                and metadata.get("source_url") == image_url
-                and metadata.get("image_id") == image_id
-                and metadata.get("size_bytes") == size_bytes
-                and metadata.get("sha256") == sha256
-            )
-            if metadata_is_valid:
-                stored_status = metadata.get("provenance_status")
-                provenance_status = (
-                    "metadata_verified"
-                    if stored_status in {"downloaded", "metadata_verified"}
-                    else stored_status or "legacy_unverified"
-                )
-                return ImageDownloadResult(
-                    path=image_path,
-                    size_bytes=size_bytes,
-                    downloaded=False,
-                    sha256=sha256,
-                    source_url=image_url,
-                    provenance_status=provenance_status,
-                )
-        except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
-            pass
-
-        # Une preuve invalide ou une URL différente impose un nouveau téléchargement.
+    if not metadata_path.is_file():
         return None
 
-    # Migration douce des images créées avant l'ajout des fichiers de preuve.
-    for extension in CONTENT_TYPE_EXTENSIONS.values():
-        existing_path = output_dir / f"{image_id}{extension}"
-        if existing_path.is_file() and existing_path.stat().st_size > 0:
-            size_bytes = existing_path.stat().st_size
-            sha256 = file_sha256(existing_path)
-            write_image_metadata(
-                metadata_path,
-                image_id,
-                image_url,
-                existing_path,
-                size_bytes,
-                sha256,
-                "legacy_adopted",
-            )
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        image_path = output_dir / metadata["file_name"]
+        size_bytes = image_path.stat().st_size
+        sha256 = file_sha256(image_path)
+        metadata_is_valid = (
+            image_path.is_file()
+            and size_bytes > 0
+            and metadata.get("source_url") == image_url
+            and metadata.get("image_id") == image_id
+            and metadata.get("size_bytes") == size_bytes
+            and metadata.get("sha256") == sha256
+            and metadata.get("provenance_status")
+            in {"downloaded", "metadata_verified"}
+        )
+        if metadata_is_valid:
             return ImageDownloadResult(
-                path=existing_path,
+                path=image_path,
                 size_bytes=size_bytes,
                 downloaded=False,
                 sha256=sha256,
                 source_url=image_url,
-                provenance_status="legacy_adopted",
+                provenance_status="metadata_verified",
             )
+    except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
+        pass
 
     return None
 

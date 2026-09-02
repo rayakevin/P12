@@ -95,20 +95,17 @@ Après l’extraction, lancer le pipeline reproductible :
 uv run python scripts/transform_data.py
 ```
 
-Par défaut, le script cumule tous les lots, garde l’occurrence la plus récente
-de chaque publication et accepte les anciens JSON sans preuve image complète.
-Ces choix sont configurables :
+Par défaut, le script cumule tous les lots et garde l’occurrence la plus récente
+de chaque publication. Une publication sans preuve complète reliant son URL à
+son image locale est rejetée. Les choix de lecture et de dédoublonnage sont
+configurables :
 
 ```bash
 uv run python scripts/transform_data.py --sources politifact fakeddit
 uv run python scripts/transform_data.py --sources theconversation
 uv run python scripts/transform_data.py \
   --input-mode latest \
-  --duplicate-policy keep-first \
-  --legacy-image-policy reject
-uv run python scripts/transform_data.py \
-  --newsdata-file data/raw/newsdata/extraction_20260826T111009Z.json \
-  --output-format parquet
+  --duplicate-policy keep-first
 ```
 
 Le pipeline applique les étapes suivantes :
@@ -138,9 +135,16 @@ logs/transform.log
 
 Le manifeste conserve le chemin et le hash de chaque lot d’entrée, le hash du
 pipeline, tous les paramètres, les compteurs par lot, les motifs de rejet et les
-métriques de chaque étape. Le schéma conceptuel, le contrat Load, les PK/FK et le
-dictionnaire des champs sont documentés dans
-[`docs/E03_SCHEMA_CONCEPTUEL_DONNEES.md`](docs/E03_SCHEMA_CONCEPTUEL_DONNEES.md).
+métriques de chaque étape. Le schéma conceptuel, le contrat Load, la clé primaire
+et le dictionnaire des champs sont documentés dans
+[`docs/E03_SCHEMA_DONNEES.ipynb`](docs/E03_SCHEMA_DONNEES.ipynb).
+
+## Documentation détaillée
+
+- [`E01_RAPPORT_EXPLORATION_SOURCES.ipynb`](docs/E01_RAPPORT_EXPLORATION_SOURCES.ipynb)
+- [`E03_SCHEMA_DONNEES.ipynb`](docs/E03_SCHEMA_DONNEES.ipynb)
+- [`GUIDE_EXTRACTION_LIGNE_PAR_LIGNE.html`](docs/perso/GUIDE_EXTRACTION_LIGNE_PAR_LIGNE.html)
+- [`GUIDE_TRANSFORMATION_LIGNE_PAR_LIGNE.html`](docs/perso/GUIDE_TRANSFORMATION_LIGNE_PAR_LIGNE.html)
 
 ## Choix des outils
 
