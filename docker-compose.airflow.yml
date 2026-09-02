@@ -1,0 +1,124 @@
+name: checkitai-airflow
+
+x-airflow-common: &airflow-common
+  build:
+    context: .
+    dockerfile: airflow/Dockerfile
+  env_file:
+    - .env.airflow
+  environment: &airflow-environment
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_DB_USER}:${AIRFLOW_DB_PASSWORD}@airflow-db:5432/${AIRFLOW_DB_NAME}
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET}
+    AIRFLOW_CONN_CHECKITAI_WAREHOUSE: postgresql://${WAREHOUSE_USER}:${WAREHOUSE_PASSWORD}@warehouse:5432/${WAREHOUSE_DB}
+    CHECKITAI_PROJECT_ROOT: /opt/checkitai
+  volumes:
+    - ./airflow/dags:/opt/airflow/dags:ro
+    - ./airflow/logs:/opt/airflow/logs
+    - ./scripts:/opt/checkitai/scripts:ro
+    - ./data:/opt/checkitai/data
+    - ./logs:/opt/checkitai/logs
+  user: "${AIRFLOW_UID}:0"
+  depends_on:
+    airflow-db:
+      condition: service_healthy
+    warehouse:
+      condition: service_healthy
+
+services:
+  airflow-db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${AIRFLOW_DB_USER}
+      POSTGRES_PASSWORD: ${AIRFLOW_DB_PASSWORD}
+      POSTGRES_DB: ${AIRFLOW_DB_NAME}
+    volumes:
+      - airflow-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${AIRFLOW_DB_USER} -d ${AIRFLOW_DB_NAME}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  warehouse:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${WAREHOUSE_ADMIN_USER}
+      POSTGRES_PASSWORD: ${WAREHOUSE_ADMIN_PASSWORD}
+      POSTGRES_DB: ${WAREHOUSE_DB}
+      WAREHOUSE_USER: ${WAREHOUSE_USER}
+      WAREHOUSE_PASSWORD: ${WAREHOUSE_PASSWORD}
+    volumes:
+      - warehouse-data:/var/lib/postgresql/data
+      - ./airflow/postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${WAREHOUSE_ADMIN_USER} -d ${WAREHOUSE_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  airflow-init:
+    <<: *airflow-common
+    command:
+      - bash
+      - -c
+      - |
+        mkdir -p /opt/airflow/logs /opt/checkitai/data /opt/checkitai/logs
+        chown -R "${AIRFLOW_UID}:0" /opt/airflow/logs /opt/checkitai/data /opt/checkitai/logs
+        chmod -R g+rwX /opt/airflow/logs /opt/checkitai/data /opt/checkitai/logs
+        airflow version
+    environment:
+      <<: *airflow-environment
+      _AIRFLOW_DB_MIGRATE: "true"
+      _AIRFLOW_WWW_USER_CREATE: "true"
+      _AIRFLOW_WWW_USER_USERNAME: ${AIRFLOW_ADMIN_USERNAME}
+      _AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD}
+    user: "0:0"
+    restart: "no"
+
+  airflow-apiserver:
+    <<: *airflow-common
+    command: api-server
+    ports:
+      - "127.0.0.1:8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/monitor/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+      airflow-apiserver:
+        condition: service_healthy
+    restart: unless-stopped
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: dag-processor
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+      airflow-apiserver:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  airflow-db-data:
+  warehouse-data:

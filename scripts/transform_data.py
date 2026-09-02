@@ -780,16 +780,20 @@ def project_path(path: Path) -> Path:
     return path.resolve() if path.is_absolute() else (PROJECT_ROOT / path).resolve()
 
 
-def resolve_input_files(args: argparse.Namespace) -> list[tuple[str, Path]]:
+def resolve_input_files(
+    sources: list[str] | tuple[str, ...],
+    input_mode: str,
+    raw_dir: Path,
+) -> list[tuple[str, Path]]:
     """Sélectionne le dernier lot ou tous les lots bruts de chaque source."""
-    raw_dir = project_path(args.raw_dir)
+    raw_dir = project_path(raw_dir)
     selected: list[tuple[str, Path]] = []
 
-    for source in args.sources:
+    for source in sources:
         candidates = sorted((raw_dir / source).glob("extraction_*.json"))
         if not candidates:
             raise FileNotFoundError(f"Aucun lot brut trouvé pour {source}.")
-        paths = candidates if args.input_mode == "all" else [candidates[-1]]
+        paths = candidates if input_mode == "all" else [candidates[-1]]
 
         for path in paths:
             resolved_path = path.resolve()
@@ -798,6 +802,96 @@ def resolve_input_files(args: argparse.Namespace) -> list[tuple[str, Path]]:
             selected.append((source, resolved_path))
 
     return selected
+
+
+def run_transformation(
+    sources: list[str] | tuple[str, ...],
+    input_mode: str,
+    duplicate_policy: str,
+    raw_dir: Path,
+    processed_dir: Path,
+    rejected_dir: Path,
+    output_format: str,
+    logger: logging.Logger,
+) -> dict:
+    """Exécute le pipeline et retourne le manifeste écrit sur disque."""
+    input_files = resolve_input_files(sources, input_mode, raw_dir)
+    logger.info(
+        "Configuration : input_mode=%s, duplicate_policy=%s",
+        input_mode,
+        duplicate_policy,
+    )
+    for source, path in input_files:
+        logger.info("Lot sélectionné pour %s : %s", source, path)
+
+    accepted, rejected, inputs_manifest, metrics = transform_inputs(
+        input_files,
+        duplicate_policy,
+        logger,
+    )
+    processed_dir = project_path(processed_dir)
+    rejected_dir = project_path(rejected_dir)
+    rejected_path = rejected_dir / "invalid_records.jsonl"
+    write_jsonl(rejected, rejected_path)
+
+    if not accepted:
+        raise RuntimeError("Aucune publication valide après transformation.")
+
+    logger.info("Étape 4/4 - Typage et export des données")
+    dataframe = make_dataframe(accepted)
+    output_paths: list[Path] = []
+    if output_format in {"parquet", "both"}:
+        parquet_path = processed_dir / "publications.parquet"
+        write_parquet(dataframe, parquet_path)
+        output_paths.append(parquet_path)
+    if output_format in {"jsonl", "both"}:
+        jsonl_path = processed_dir / "publications.jsonl"
+        write_jsonl(accepted, jsonl_path)
+        output_paths.append(jsonl_path)
+
+    rejection_counts = Counter(rejection["reason"] for rejection in rejected)
+    manifest = {
+        "schema_version": SCHEMA_VERSION,
+        "pipeline_sha256": file_sha256(Path(__file__)),
+        "transformed_at": utc_now(),
+        "parameters": {
+            "sources": list(sources),
+            "input_mode": input_mode,
+            "duplicate_policy": duplicate_policy,
+            "output_format": output_format,
+            "raw_dir": relative_path(project_path(raw_dir)),
+            "processed_dir": relative_path(processed_dir),
+            "rejected_dir": relative_path(rejected_dir),
+        },
+        "inputs": inputs_manifest,
+        "accepted_count": len(accepted),
+        "rejected_count": len(rejected),
+        "rejection_counts": dict(sorted(rejection_counts.items())),
+        "transformation_metrics": dict(sorted(metrics.items())),
+        "columns": list(FINAL_COLUMNS),
+        "outputs": [
+            {
+                "path": relative_path(path),
+                "sha256": file_sha256(path),
+            }
+            for path in output_paths
+        ],
+        "rejected_path": relative_path(rejected_path),
+    }
+    manifest_path = processed_dir / "transformation_manifest.json"
+    write_json(manifest, manifest_path)
+
+    for metric, value in sorted(metrics.items()):
+        logger.info("Métrique transformation | %s=%s", metric, value)
+    logger.info(
+        "Transformation terminée : %s publications, %s rejets.",
+        len(accepted),
+        len(rejected),
+    )
+    for path in output_paths:
+        logger.info("Sortie produite : %s", path)
+    logger.info("Manifeste : %s", manifest_path)
+    return manifest
 
 
 def parse_args() -> argparse.Namespace:
@@ -838,82 +932,16 @@ def main() -> None:
     logger = configure_logging("transform")
 
     try:
-        input_files = resolve_input_files(args)
-        logger.info(
-            "Configuration : input_mode=%s, duplicate_policy=%s",
-            args.input_mode,
-            args.duplicate_policy,
+        run_transformation(
+            sources=args.sources,
+            input_mode=args.input_mode,
+            duplicate_policy=args.duplicate_policy,
+            raw_dir=args.raw_dir,
+            processed_dir=args.processed_dir,
+            rejected_dir=args.rejected_dir,
+            output_format=args.output_format,
+            logger=logger,
         )
-        for source, path in input_files:
-            logger.info("Lot sélectionné pour %s : %s", source, path)
-
-        accepted, rejected, inputs_manifest, metrics = transform_inputs(
-            input_files,
-            args.duplicate_policy,
-            logger,
-        )
-        processed_dir = project_path(args.processed_dir)
-        rejected_dir = project_path(args.rejected_dir)
-        rejected_path = rejected_dir / "invalid_records.jsonl"
-        write_jsonl(rejected, rejected_path)
-
-        if not accepted:
-            raise RuntimeError("Aucune publication valide après transformation.")
-
-        logger.info("Étape 4/4 - Typage et export des données")
-        dataframe = make_dataframe(accepted)
-        output_paths: list[Path] = []
-        if args.output_format in {"parquet", "both"}:
-            parquet_path = processed_dir / "publications.parquet"
-            write_parquet(dataframe, parquet_path)
-            output_paths.append(parquet_path)
-        if args.output_format in {"jsonl", "both"}:
-            jsonl_path = processed_dir / "publications.jsonl"
-            write_jsonl(accepted, jsonl_path)
-            output_paths.append(jsonl_path)
-
-        rejection_counts = Counter(rejection["reason"] for rejection in rejected)
-        manifest = {
-            "schema_version": SCHEMA_VERSION,
-            "pipeline_sha256": file_sha256(Path(__file__)),
-            "transformed_at": utc_now(),
-            "parameters": {
-                "sources": list(args.sources),
-                "input_mode": args.input_mode,
-                "duplicate_policy": args.duplicate_policy,
-                "output_format": args.output_format,
-                "raw_dir": relative_path(project_path(args.raw_dir)),
-                "processed_dir": relative_path(processed_dir),
-                "rejected_dir": relative_path(rejected_dir),
-            },
-            "inputs": inputs_manifest,
-            "accepted_count": len(accepted),
-            "rejected_count": len(rejected),
-            "rejection_counts": dict(sorted(rejection_counts.items())),
-            "transformation_metrics": dict(sorted(metrics.items())),
-            "columns": list(FINAL_COLUMNS),
-            "outputs": [
-                {
-                    "path": relative_path(path),
-                    "sha256": file_sha256(path),
-                }
-                for path in output_paths
-            ],
-            "rejected_path": relative_path(rejected_path),
-        }
-        manifest_path = processed_dir / "transformation_manifest.json"
-        write_json(manifest, manifest_path)
-
-        for metric, value in sorted(metrics.items()):
-            logger.info("Métrique transformation | %s=%s", metric, value)
-        logger.info(
-            "Transformation terminée : %s publications, %s rejets.",
-            len(accepted),
-            len(rejected),
-        )
-        for path in output_paths:
-            logger.info("Sortie produite : %s", path)
-        logger.info("Manifeste : %s", manifest_path)
     except Exception:
         logger.exception("Échec du pipeline de transformation")
         raise SystemExit(1)

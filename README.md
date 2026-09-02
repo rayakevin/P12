@@ -139,10 +139,28 @@ métriques de chaque étape. Le schéma conceptuel, le contrat Load, la clé pri
 et le dictionnaire des champs sont documentés dans
 [`docs/E03_SCHEMA_DONNEES.ipynb`](docs/E03_SCHEMA_DONNEES.ipynb).
 
+## Orchestration Airflow et chargement PostgreSQL
+
+Le DAG `checkitai_multimodal_etl` orchestre les quatre extractions en parallèle,
+puis la transformation, l'upsert PostgreSQL et un contrôle final. L'environnement
+local complet se lance ainsi :
+
+```bash
+uv run python scripts/init_airflow_env.py
+docker compose --env-file .env.airflow -f docker-compose.airflow.yml build
+docker compose --env-file .env.airflow -f docker-compose.airflow.yml up airflow-init
+docker compose --env-file .env.airflow -f docker-compose.airflow.yml up -d
+```
+
+L'interface Airflow est alors disponible sur <http://localhost:8080>. Les étapes,
+les paramètres, la sécurité et les preuves d'exécution sont décrits dans
+[`docs/E04_FLUX_ETL_AIRFLOW.md`](docs/E04_FLUX_ETL_AIRFLOW.md).
+
 ## Documentation détaillée
 
 - [`E01_RAPPORT_EXPLORATION_SOURCES.ipynb`](docs/E01_RAPPORT_EXPLORATION_SOURCES.ipynb)
 - [`E03_SCHEMA_DONNEES.ipynb`](docs/E03_SCHEMA_DONNEES.ipynb)
+- [`E04_FLUX_ETL_AIRFLOW.md`](docs/E04_FLUX_ETL_AIRFLOW.md)
 - [`GUIDE_EXTRACTION_LIGNE_PAR_LIGNE.html`](docs/perso/GUIDE_EXTRACTION_LIGNE_PAR_LIGNE.html)
 - [`GUIDE_TRANSFORMATION_LIGNE_PAR_LIGNE.html`](docs/perso/GUIDE_TRANSFORMATION_LIGNE_PAR_LIGNE.html)
 
