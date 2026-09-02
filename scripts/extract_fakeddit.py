@@ -33,6 +33,7 @@ REQUEST_DELAY_SECONDS = 0.2
 def extract_fakeddit(
     tsv_path: Path,
     limit: int,
+    refresh_images: bool,
     logger: logging.Logger,
 ) -> list[dict]:
     """Lit le TSV progressivement et récupère ``limit`` couples texte-image."""
@@ -64,11 +65,12 @@ def extract_fakeddit(
                 continue
 
             try:
-                image_path, image_size, downloaded = download_image(
+                image = download_image(
                     session,
                     image_url,
                     image_id,
                     IMAGES_DIR,
+                    refresh_existing=refresh_images,
                 )
             except (requests.RequestException, OSError, ValueError, RuntimeError) as error:
                 failures += 1
@@ -76,18 +78,22 @@ def extract_fakeddit(
                 continue
 
             record = dict(row)
-            record["_image_path"] = relative_path(image_path)
-            record["_image_size"] = image_size
+            record["_image_path"] = relative_path(image.path)
+            record["_image_size"] = image.size_bytes
+            record["_image_sha256"] = image.sha256
+            record["_downloaded_from_url"] = image.source_url
+            record["_image_provenance_status"] = image.provenance_status
             records.append(record)
             logger.info(
-                "[%s/%s] %s (%s)",
+                "[%s/%s] %s (%s, provenance=%s)",
                 len(records),
                 limit,
                 image_id,
-                "téléchargé" if downloaded else "déjà présent",
+                "téléchargé" if image.downloaded else "déjà présent",
+                image.provenance_status,
             )
 
-            if downloaded:
+            if image.downloaded:
                 time.sleep(REQUEST_DELAY_SECONDS)
 
     logger.info("Bilan : %s couples prêts, %s échecs", len(records), failures)
@@ -101,6 +107,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--limit", type=int, default=100)
     parser.add_argument("--tsv", type=Path, default=DEFAULT_TSV_PATH)
+    parser.add_argument(
+        "--refresh-images",
+        action="store_true",
+        help="Retélécharge les images même si une copie locale existe.",
+    )
     return parser.parse_args()
 
 
@@ -112,7 +123,12 @@ def main() -> None:
     try:
         if args.limit < 1:
             raise ValueError("--limit doit être positif.")
-        records = extract_fakeddit(args.tsv, args.limit, logger)
+        records = extract_fakeddit(
+            args.tsv,
+            args.limit,
+            args.refresh_images,
+            logger,
+        )
         output_path = save_json_records(records, "fakeddit")
         logger.info("Extraction terminée : %s couples dans %s", len(records), output_path)
     except Exception:

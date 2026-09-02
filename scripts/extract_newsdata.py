@@ -27,6 +27,7 @@ def extract_newsdata(
     limit: int,
     max_pages: int,
     query: str | None,
+    refresh_images: bool,
     logger: logging.Logger,
 ) -> list[dict]:
     """Récupère et sauvegarde en mémoire jusqu'à ``limit`` articles multimodaux."""
@@ -70,11 +71,12 @@ def extract_newsdata(
                     continue
 
                 try:
-                    image_path, image_size, downloaded = download_image(
+                    image = download_image(
                         session,
                         image_url,
                         f"newsdata_{article_id}",
                         IMAGES_DIR,
+                        refresh_existing=refresh_images,
                     )
                 except (requests.RequestException, OSError, ValueError, RuntimeError) as error:
                     logger.warning("Image ignorée pour %s : %s", article_id, error)
@@ -82,13 +84,17 @@ def extract_newsdata(
 
                 # On conserve l'objet API brut et on ajoute seulement les infos d'extraction.
                 record = dict(article)
-                record["_image_path"] = relative_path(image_path)
-                record["_image_size"] = image_size
+                record["_image_path"] = relative_path(image.path)
+                record["_image_size"] = image.size_bytes
+                record["_image_sha256"] = image.sha256
+                record["_downloaded_from_url"] = image.source_url
+                record["_image_provenance_status"] = image.provenance_status
                 records.append(record)
                 logger.info(
-                    "Article %s prêt (%s)",
+                    "Article %s prêt (%s, provenance=%s)",
                     article_id,
-                    "téléchargé" if downloaded else "déjà présent",
+                    "téléchargé" if image.downloaded else "déjà présent",
+                    image.provenance_status,
                 )
 
             if len(records) >= limit:
@@ -114,6 +120,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=10)
     parser.add_argument("--max-pages", type=int, default=1)
     parser.add_argument("--query", default=None)
+    parser.add_argument(
+        "--refresh-images",
+        action="store_true",
+        help="Retélécharge les images même si une copie locale existe.",
+    )
     return parser.parse_args()
 
 
@@ -135,6 +146,7 @@ def main() -> None:
             args.limit,
             args.max_pages,
             args.query,
+            args.refresh_images,
             logger,
         )
         output_path = save_json_records(records, "newsdata")

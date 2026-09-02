@@ -27,7 +27,11 @@ def make_image_id(entry_id: str) -> str:
     return f"politifact_{digest}"
 
 
-def extract_politifact(limit: int, logger: logging.Logger) -> list[dict]:
+def extract_politifact(
+    limit: int,
+    refresh_images: bool,
+    logger: logging.Logger,
+) -> list[dict]:
     """Récupère jusqu'à ``limit`` entrées RSS possédant texte et image."""
     records: list[dict] = []
 
@@ -60,11 +64,12 @@ def extract_politifact(limit: int, logger: logging.Logger) -> list[dict]:
                 continue
 
             try:
-                image_path, image_size, downloaded = download_image(
+                image = download_image(
                     session,
                     image_url,
                     make_image_id(entry_id),
                     IMAGES_DIR,
+                    refresh_existing=refresh_images,
                 )
             except (requests.RequestException, OSError, ValueError, RuntimeError) as error:
                 logger.warning("Image ignorée pour %s : %s", entry_id, error)
@@ -80,13 +85,17 @@ def extract_politifact(limit: int, logger: logging.Logger) -> list[dict]:
                 "published": entry.get("published"),
                 "author": entry.get("author"),
                 "image_url": image_url,
-                "_image_path": relative_path(image_path),
-                "_image_size": image_size,
+                "_image_path": relative_path(image.path),
+                "_image_size": image.size_bytes,
+                "_image_sha256": image.sha256,
+                "_downloaded_from_url": image.source_url,
+                "_image_provenance_status": image.provenance_status,
             })
             logger.info(
-                "Fact-check prêt : %s (%s)",
+                "Fact-check prêt : %s (%s, provenance=%s)",
                 entry_id,
-                "téléchargé" if downloaded else "déjà présent",
+                "téléchargé" if image.downloaded else "déjà présent",
+                image.provenance_status,
             )
 
     if not records:
@@ -98,6 +107,11 @@ def parse_args() -> argparse.Namespace:
     """Lit la limite d'entrées depuis la ligne de commande."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--limit", type=int, default=20)
+    parser.add_argument(
+        "--refresh-images",
+        action="store_true",
+        help="Retélécharge les images même si une copie locale existe.",
+    )
     return parser.parse_args()
 
 
@@ -109,7 +123,7 @@ def main() -> None:
     try:
         if args.limit < 1:
             raise ValueError("--limit doit être positif.")
-        records = extract_politifact(args.limit, logger)
+        records = extract_politifact(args.limit, args.refresh_images, logger)
         output_path = save_json_records(records, "politifact")
         logger.info("Extraction terminée : %s entrées dans %s", len(records), output_path)
     except Exception:

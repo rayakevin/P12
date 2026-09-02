@@ -1,7 +1,9 @@
 """Fonctions partagées par les scripts d'extraction."""
 
 import json
+import hashlib
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -21,6 +23,18 @@ CONTENT_TYPE_EXTENSIONS = {
     "image/webp": ".webp",
     "image/gif": ".gif",
 }
+
+
+@dataclass(frozen=True)
+class ImageDownloadResult:
+    """Décrit une image locale et la preuve de son URL de téléchargement."""
+
+    path: Path
+    size_bytes: int
+    downloaded: bool
+    sha256: str
+    source_url: str
+    provenance_status: str
 
 
 def configure_logging(source: str) -> logging.Logger:
@@ -48,9 +62,7 @@ def configure_logging(source: str) -> logging.Logger:
 
 
 def create_http_session() -> requests.Session:
-    """Retourne une session HTTP avec retries sur les erreurs temporaires.""" 
-
-
+    """Retourne une session HTTP avec retries sur les erreurs temporaires."""
     retry = Retry(
         total=3,
         backoff_factor=0.5,
@@ -58,12 +70,6 @@ def create_http_session() -> requests.Session:
         allowed_methods={"GET"},
         respect_retry_after_header=True,
     )
-        #429  quota ou débit dépassé
-        #500  erreur interne
-        #502  mauvaise passerelle
-        #503  service indisponible
-        #504  délai de passerelle dépassé
-        
     adapter = HTTPAdapter(max_retries=retry)
 
     session = requests.Session()
@@ -73,20 +79,127 @@ def create_http_session() -> requests.Session:
     return session
 
 
+def file_sha256(path: Path) -> str:
+    """Calcule le SHA-256 d'un fichier sans le charger entièrement en mémoire."""
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def write_image_metadata(
+    metadata_path: Path,
+    image_id: str,
+    image_url: str,
+    image_path: Path,
+    size_bytes: int,
+    sha256: str,
+    provenance_status: str,
+) -> None:
+    """Écrit atomiquement la preuve liant une URL au fichier image local."""
+    payload = {
+        "image_id": image_id,
+        "source_url": image_url,
+        "file_name": image_path.name,
+        "size_bytes": size_bytes,
+        "sha256": sha256,
+        "provenance_status": provenance_status,
+        "recorded_at": utc_now(),
+    }
+    temporary_path = metadata_path.with_suffix(".json.part")
+    try:
+        with temporary_path.open("w", encoding="utf-8") as file:
+            json.dump(payload, file, ensure_ascii=False, indent=2, sort_keys=True)
+        temporary_path.replace(metadata_path)
+    except Exception:
+        temporary_path.unlink(missing_ok=True)
+        raise
+
+
+def reusable_image(
+    output_dir: Path,
+    image_id: str,
+    image_url: str,
+) -> ImageDownloadResult | None:
+    """Réutilise une image seulement si sa preuve locale reste cohérente."""
+    metadata_path = output_dir / f"{image_id}.metadata.json"
+
+    if metadata_path.is_file():
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            image_path = output_dir / metadata["file_name"]
+            size_bytes = image_path.stat().st_size
+            sha256 = file_sha256(image_path)
+            metadata_is_valid = (
+                image_path.is_file()
+                and size_bytes > 0
+                and metadata.get("source_url") == image_url
+                and metadata.get("image_id") == image_id
+                and metadata.get("size_bytes") == size_bytes
+                and metadata.get("sha256") == sha256
+            )
+            if metadata_is_valid:
+                stored_status = metadata.get("provenance_status")
+                provenance_status = (
+                    "metadata_verified"
+                    if stored_status in {"downloaded", "metadata_verified"}
+                    else stored_status or "legacy_unverified"
+                )
+                return ImageDownloadResult(
+                    path=image_path,
+                    size_bytes=size_bytes,
+                    downloaded=False,
+                    sha256=sha256,
+                    source_url=image_url,
+                    provenance_status=provenance_status,
+                )
+        except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
+            pass
+
+        # Une preuve invalide ou une URL différente impose un nouveau téléchargement.
+        return None
+
+    # Migration douce des images créées avant l'ajout des fichiers de preuve.
+    for extension in CONTENT_TYPE_EXTENSIONS.values():
+        existing_path = output_dir / f"{image_id}{extension}"
+        if existing_path.is_file() and existing_path.stat().st_size > 0:
+            size_bytes = existing_path.stat().st_size
+            sha256 = file_sha256(existing_path)
+            write_image_metadata(
+                metadata_path,
+                image_id,
+                image_url,
+                existing_path,
+                size_bytes,
+                sha256,
+                "legacy_adopted",
+            )
+            return ImageDownloadResult(
+                path=existing_path,
+                size_bytes=size_bytes,
+                downloaded=False,
+                sha256=sha256,
+                source_url=image_url,
+                provenance_status="legacy_adopted",
+            )
+
+    return None
+
+
 def download_image(
     session: requests.Session,
     image_url: str,
     image_id: str,
     output_dir: Path,
-) -> tuple[Path, int, bool]:
-    """Télécharge une image valide et retourne chemin, taille et état nouveau/existant."""
+    refresh_existing: bool = False,
+) -> ImageDownloadResult:
+    """Télécharge une image ou réutilise une copie dont la provenance est vérifiée."""
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Une image existante et non vide rend le script relançable sans doublon.
-    for extension in CONTENT_TYPE_EXTENSIONS.values():
-        existing_path = output_dir / f"{image_id}{extension}"
-        if existing_path.is_file() and existing_path.stat().st_size > 0:
-            return existing_path, existing_path.stat().st_size, False
+    if not refresh_existing:
+        existing_result = reusable_image(output_dir, image_id, image_url)
+        if existing_result:
+            return existing_result
 
     with session.get(
         image_url,
@@ -134,7 +247,24 @@ def download_image(
             temporary_path.unlink(missing_ok=True)
             raise
 
-    return destination, downloaded_bytes, True
+    sha256 = file_sha256(destination)
+    write_image_metadata(
+        output_dir / f"{image_id}.metadata.json",
+        image_id,
+        image_url,
+        destination,
+        downloaded_bytes,
+        sha256,
+        "downloaded",
+    )
+    return ImageDownloadResult(
+        path=destination,
+        size_bytes=downloaded_bytes,
+        downloaded=True,
+        sha256=sha256,
+        source_url=image_url,
+        provenance_status="downloaded",
+    )
 
 
 def relative_path(path: Path) -> str:
